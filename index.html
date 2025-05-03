@@ -4,10 +4,7 @@
     <title>AR Ship Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-        }
+        body { margin: 0; overflow: hidden; }
         #info {
             position: fixed;
             top: 10px;
@@ -16,20 +13,6 @@
             color: white;
             background: rgba(0, 0, 0, 0.7);
             padding: 10px;
-            z-index: 100;
-        }
-        #startAR {
-            position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 12px 24px;
-            background: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            font-size: 16px;
-            cursor: pointer;
             z-index: 100;
         }
     </style>
@@ -52,6 +35,12 @@
         import { ARButton } from 'three/addons/webxr/ARButton.js';
 
         const info = document.getElementById('info');
+        let camera, scene, renderer;
+        let controller;
+        let reticle;
+        let shipModel = null;
+        let shipContainer = new THREE.Group();
+        let hasPlaced = false;
 
         // Check WebXR support
         if ('xr' in navigator) {
@@ -71,17 +60,10 @@
             info.textContent = 'WebXR not available in this browser';
         }
 
-        let camera, scene, renderer;
-        let controller;
-        let reticle;
-        let shipModel;
-
         async function init() {
             scene = new THREE.Scene();
-
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-            // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -102,6 +84,22 @@
             reticle.matrixAutoUpdate = false;
             reticle.visible = false;
             scene.add(reticle);
+
+            // Create ship container
+            scene.add(shipContainer);
+
+            // Create water plane
+            const waterGeometry = new THREE.PlaneGeometry(1, 1);
+            const waterMaterial = new THREE.MeshStandardMaterial({
+                color: 0x0077be,
+                transparent: true,
+                opacity: 0.7,
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            const waterPlane = new THREE.Mesh(waterGeometry, waterMaterial);
+            waterPlane.rotation.x = -Math.PI / 2;
+            shipContainer.add(waterPlane);
 
             // Load ship model
             try {
@@ -131,8 +129,9 @@
 
                 shipModel.scale.set(0.02, 0.02, 0.02);
                 shipModel.rotation.x = -Math.PI / 2;
-                shipModel.visible = false;
-                scene.add(shipModel);
+                shipModel.position.y = 0.05; // Lift slightly above water
+                shipContainer.add(shipModel);
+                shipContainer.visible = false;
                 
                 info.textContent = 'Model loaded successfully!';
             } catch (error) {
@@ -166,10 +165,13 @@
         }
 
         function onSelect() {
-            if (reticle.visible) {
-                shipModel.position.setFromMatrixPosition(reticle.matrix);
-                shipModel.visible = true;
-                info.textContent = 'Ship placed!';
+            if (reticle.visible && !hasPlaced) {
+                // Copy reticle's position and rotation
+                shipContainer.position.setFromMatrixPosition(reticle.matrix);
+                shipContainer.quaternion.setFromRotationMatrix(reticle.matrix);
+                shipContainer.visible = true;
+                hasPlaced = true;
+                info.textContent = 'Ship placed! The water surface will follow the detected plane';
             }
         }
 
@@ -201,7 +203,7 @@
                     info.textContent = 'Looking for surfaces...';
                 }
 
-                if (hitTestSource) {
+                if (hitTestSource && !hasPlaced) {
                     const hitTestResults = frame.getHitTestResults(hitTestSource);
                     if (hitTestResults.length) {
                         const hit = hitTestResults[0];
@@ -210,9 +212,7 @@
                         info.textContent = 'Surface found! Tap to place ship';
                     } else {
                         reticle.visible = false;
-                        if (!shipModel.visible) {
-                            info.textContent = 'Move your device to find a surface';
-                        }
+                        info.textContent = 'Move your device to find a surface';
                     }
                 }
             }
