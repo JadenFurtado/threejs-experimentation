@@ -1,0 +1,3 @@
+## ThreeJS experimentation
+
+This is fun project I built to experiment with ThreeJS
