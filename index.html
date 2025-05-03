@@ -8,6 +8,16 @@
             margin: 0;
             overflow: hidden;
         }
+        #info {
+            position: fixed;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            z-index: 100;
+        }
         #startAR {
             position: fixed;
             bottom: 20px;
@@ -22,24 +32,10 @@
             cursor: pointer;
             z-index: 100;
         }
-        #loading {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            font-family: Arial, sans-serif;
-            display: none;
-            z-index: 100;
-        }
     </style>
 </head>
 <body>
-    <button id="startAR">Start AR</button>
-    <div id="loading">Loading 3D Model...</div>
+    <div id="info">Loading...</div>
     <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
     <script type="importmap">
     {
@@ -51,102 +47,114 @@
     </script>
     <script type="module">
         import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
         import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
-        import { Water } from 'three/addons/objects/Water.js';
         import { ARButton } from 'three/addons/webxr/ARButton.js';
 
-        let container;
+        const info = document.getElementById('info');
+
+        // Check WebXR support
+        if ('xr' in navigator) {
+            navigator.xr.isSessionSupported('immersive-ar')
+                .then((supported) => {
+                    if (supported) {
+                        info.textContent = 'AR is supported! Starting initialization...';
+                        init();
+                    } else {
+                        info.textContent = 'AR not supported on this device/browser';
+                    }
+                })
+                .catch(err => {
+                    info.textContent = 'Error checking AR support: ' + err;
+                });
+        } else {
+            info.textContent = 'WebXR not available in this browser';
+        }
+
         let camera, scene, renderer;
         let controller;
         let reticle;
-        let hitTestSource = null;
-        let hitTestSourceRequested = false;
-        let shipGroup;
-        let water;
+        let shipModel;
 
-        // Loading manager
-        const loadingManager = new THREE.LoadingManager();
-        const loadingElement = document.getElementById('loading');
-        
-        loadingManager.onStart = () => {
-            loadingElement.style.display = 'block';
-        };
-        
-        loadingManager.onLoad = () => {
-            loadingElement.style.display = 'none';
-        };
-
-        init();
-
-        function init() {
-            const container = document.createElement('div');
-            document.body.appendChild(container);
-
+        async function init() {
             scene = new THREE.Scene();
 
             camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
+            // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.xr.enabled = true;
-            container.appendChild(renderer.domElement);
+            document.body.appendChild(renderer.domElement);
 
-            // Light setup
+            // Lights
             const light = new THREE.DirectionalLight(0xffffff, 2);
             light.position.set(1, 1, 1);
             scene.add(light);
             scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-            // Create ship group
-            shipGroup = new THREE.Group();
-
-            // Load ship model
-            const mtlLoader = new MTLLoader(loadingManager);
-            mtlLoader.load('models/LPG_Tanker_Ship.mtl', function(materials) {
-                materials.preload();
-                const objLoader = new OBJLoader(loadingManager);
-                objLoader.setMaterials(materials);
-                objLoader.load('models/LPG_Tanker_Ship.obj', function(object) {
-                    object.scale.set(0.02, 0.02, 0.02);
-                    object.rotation.x = -Math.PI / 2;
-                    shipGroup.add(object);
-                });
-            });
-
-            // Create water
-            const waterGeometry = new THREE.PlaneGeometry(2, 2);
-            water = new Water(waterGeometry, {
-                textureWidth: 512,
-                textureHeight: 512,
-                waterNormals: new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/waternormals.jpg', function(texture) {
-                    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-                }),
-                sunDirection: new THREE.Vector3(),
-                sunColor: 0xffffff,
-                waterColor: 0x001e0f,
-                distortionScale: 3.7,
-                fog: false
-            });
-            water.rotation.x = -Math.PI / 2;
-            shipGroup.add(water);
-
             // Create reticle
-            const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-            const material = new THREE.MeshBasicMaterial();
-            reticle = new THREE.Mesh(geometry, material);
+            reticle = new THREE.Mesh(
+                new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+                new THREE.MeshBasicMaterial()
+            );
             reticle.matrixAutoUpdate = false;
             reticle.visible = false;
             scene.add(reticle);
 
-            // AR button
-            document.body.appendChild(ARButton.createButton(renderer, {
-                requiredFeatures: ['hit-test'],
-                optionalFeatures: ['dom-overlay'],
-                domOverlay: { root: document.body }
-            }));
+            // Load ship model
+            try {
+                info.textContent = 'Loading 3D model...';
+                const mtlLoader = new MTLLoader();
+                const materials = await new Promise((resolve, reject) => {
+                    mtlLoader.load(
+                        'models/LPG_Tanker_Ship.mtl',
+                        resolve,
+                        undefined,
+                        reject
+                    );
+                });
+
+                materials.preload();
+                const objLoader = new OBJLoader();
+                objLoader.setMaterials(materials);
+
+                shipModel = await new Promise((resolve, reject) => {
+                    objLoader.load(
+                        'models/LPG_Tanker_Ship.obj',
+                        resolve,
+                        undefined,
+                        reject
+                    );
+                });
+
+                shipModel.scale.set(0.02, 0.02, 0.02);
+                shipModel.rotation.x = -Math.PI / 2;
+                shipModel.visible = false;
+                scene.add(shipModel);
+                
+                info.textContent = 'Model loaded successfully!';
+            } catch (error) {
+                info.textContent = 'Error loading model: ' + error;
+                console.error('Error loading model:', error);
+                return;
+            }
+
+            // AR Setup
+            try {
+                const button = ARButton.createButton(renderer, {
+                    requiredFeatures: ['hit-test'],
+                    optionalFeatures: ['dom-overlay'],
+                    domOverlay: { root: document.body }
+                });
+                document.body.appendChild(button);
+                info.textContent = 'AR ready! Click "Start AR" to begin';
+            } catch (error) {
+                info.textContent = 'Error setting up AR: ' + error;
+                console.error('Error setting up AR:', error);
+                return;
+            }
 
             // Controller
             controller = renderer.xr.getController(0);
@@ -154,14 +162,14 @@
             scene.add(controller);
 
             window.addEventListener('resize', onWindowResize, false);
-
             animate();
         }
 
         function onSelect() {
             if (reticle.visible) {
-                shipGroup.position.setFromMatrixPosition(reticle.matrix);
-                shipGroup.visible = true;
+                shipModel.position.setFromMatrixPosition(reticle.matrix);
+                shipModel.visible = true;
+                info.textContent = 'Ship placed!';
             }
         }
 
@@ -175,6 +183,9 @@
             renderer.setAnimationLoop(render);
         }
 
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
+
         function render(timestamp, frame) {
             if (frame) {
                 const referenceSpace = renderer.xr.getReferenceSpace();
@@ -186,8 +197,8 @@
                             hitTestSource = source;
                         });
                     });
-
                     hitTestSourceRequested = true;
+                    info.textContent = 'Looking for surfaces...';
                 }
 
                 if (hitTestSource) {
@@ -196,15 +207,14 @@
                         const hit = hitTestResults[0];
                         reticle.visible = true;
                         reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                        info.textContent = 'Surface found! Tap to place ship';
                     } else {
                         reticle.visible = false;
+                        if (!shipModel.visible) {
+                            info.textContent = 'Move your device to find a surface';
+                        }
                     }
                 }
-            }
-
-            // Animate water
-            if (water) {
-                water.material.uniforms['time'].value += 1.0 / 60.0;
             }
 
             renderer.render(scene, camera);
