@@ -1,77 +1,214 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Ship AR Viewer</title>
+    <title>AR Ship Viewer</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.1.1/dist/aframe-extras.min.js"></script>
     <style>
-        .arjs-loader {
-            position: fixed;
-            z-index: 999;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            background: rgba(0, 0, 0, 0.8);
+        body {
+            margin: 0;
+            overflow: hidden;
         }
-        
-        .arjs-loader div {
+        #startAR {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background: #4CAF50;
             color: white;
-            text-align: center;
-            font-size: 1.25em;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 100;
+        }
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: Arial, sans-serif;
+            display: none;
+            z-index: 100;
         }
     </style>
-    <script>
-        AFRAME.registerComponent('water-material', {
-            init: function() {
-                this.el.setAttribute('material', {
-                    color: '#4286f4',
-                    opacity: 0.8,
-                    transparent: true,
-                    metalness: 0.6,
-                    roughness: 0.2
-                });
-            }
-        });
-    </script>
 </head>
-<body style="margin: 0; overflow: hidden;">
-    <div class="arjs-loader">
-        <div>Loading AR experience... Please wait...</div>
-    </div>
+<body>
+    <button id="startAR">Start AR</button>
+    <div id="loading">Loading 3D Model...</div>
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+        import { Water } from 'three/addons/objects/Water.js';
+        import { ARButton } from 'three/addons/webxr/ARButton.js';
 
-    <a-scene
-        embedded
-        arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix;"
-        renderer="logarithmicDepthBuffer: true;"
-        vr-mode-ui="enabled: false">
+        let container;
+        let camera, scene, renderer;
+        let controller;
+        let reticle;
+        let hitTestSource = null;
+        let hitTestSourceRequested = false;
+        let shipGroup;
+        let water;
 
-        <!-- Water surface -->
-        <a-plane
-            position="0 -0.5 0"
-            rotation="-90 0 0"
-            width="4"
-            height="4"
-            water-material
-            animation="property: components.material.material.opacity; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; from: 0.6; to: 0.8">
-        </a-plane>
+        // Loading manager
+        const loadingManager = new THREE.LoadingManager();
+        const loadingElement = document.getElementById('loading');
+        
+        loadingManager.onStart = () => {
+            loadingElement.style.display = 'block';
+        };
+        
+        loadingManager.onLoad = () => {
+            loadingElement.style.display = 'none';
+        };
 
-        <!-- Load the 3D model -->
-        <a-entity
-            position="0 0 0"
-            rotation="-90 0 0"
-            scale="0.05 0.05 0.05"
-            obj-model="obj: url(models/LPG_Tanker_Ship.obj); mtl: url(models/LPG_Tanker_Ship.mtl)"
-            animation="property: position; dir: alternate; dur: 2000; easing: easeInOutSine; loop: true; from: 0 0 0; to: 0 0.05 0">
-        </a-entity>
+        init();
 
-        <!-- AR marker -->
-        <a-marker-camera preset="hiro"></a-marker-camera>
-    </a-scene>
+        function init() {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            scene = new THREE.Scene();
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.xr.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Light setup
+            const light = new THREE.DirectionalLight(0xffffff, 2);
+            light.position.set(1, 1, 1);
+            scene.add(light);
+            scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+            // Create ship group
+            shipGroup = new THREE.Group();
+
+            // Load ship model
+            const mtlLoader = new MTLLoader(loadingManager);
+            mtlLoader.load('models/LPG_Tanker_Ship.mtl', function(materials) {
+                materials.preload();
+                const objLoader = new OBJLoader(loadingManager);
+                objLoader.setMaterials(materials);
+                objLoader.load('models/LPG_Tanker_Ship.obj', function(object) {
+                    object.scale.set(0.02, 0.02, 0.02);
+                    object.rotation.x = -Math.PI / 2;
+                    shipGroup.add(object);
+                });
+            });
+
+            // Create water
+            const waterGeometry = new THREE.PlaneGeometry(2, 2);
+            water = new Water(waterGeometry, {
+                textureWidth: 512,
+                textureHeight: 512,
+                waterNormals: new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/waternormals.jpg', function(texture) {
+                    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+                }),
+                sunDirection: new THREE.Vector3(),
+                sunColor: 0xffffff,
+                waterColor: 0x001e0f,
+                distortionScale: 3.7,
+                fog: false
+            });
+            water.rotation.x = -Math.PI / 2;
+            shipGroup.add(water);
+
+            // Create reticle
+            const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
+            const material = new THREE.MeshBasicMaterial();
+            reticle = new THREE.Mesh(geometry, material);
+            reticle.matrixAutoUpdate = false;
+            reticle.visible = false;
+            scene.add(reticle);
+
+            // AR button
+            document.body.appendChild(ARButton.createButton(renderer, {
+                requiredFeatures: ['hit-test'],
+                optionalFeatures: ['dom-overlay'],
+                domOverlay: { root: document.body }
+            }));
+
+            // Controller
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('select', onSelect);
+            scene.add(controller);
+
+            window.addEventListener('resize', onWindowResize, false);
+
+            animate();
+        }
+
+        function onSelect() {
+            if (reticle.visible) {
+                shipGroup.position.setFromMatrixPosition(reticle.matrix);
+                shipGroup.visible = true;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            renderer.setAnimationLoop(render);
+        }
+
+        function render(timestamp, frame) {
+            if (frame) {
+                const referenceSpace = renderer.xr.getReferenceSpace();
+                const session = renderer.xr.getSession();
+
+                if (hitTestSourceRequested === false) {
+                    session.requestReferenceSpace('viewer').then(function(referenceSpace) {
+                        session.requestHitTestSource({ space: referenceSpace }).then(function(source) {
+                            hitTestSource = source;
+                        });
+                    });
+
+                    hitTestSourceRequested = true;
+                }
+
+                if (hitTestSource) {
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length) {
+                        const hit = hitTestResults[0];
+                        reticle.visible = true;
+                        reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                    } else {
+                        reticle.visible = false;
+                    }
+                }
+            }
+
+            // Animate water
+            if (water) {
+                water.material.uniforms['time'].value += 1.0 / 60.0;
+            }
+
+            renderer.render(scene, camera);
+        }
+    </script>
 </body>
 </html>
